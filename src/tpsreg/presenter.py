@@ -967,7 +967,7 @@ class ApplicationPresenter:
                 self._notify_view_show_preview(warped, dst_img)
 
             if return_data:
-                return warped, src_img, dst_img
+                return warped, src_img, dst_img, tform
 
         except Exception as e:
             logger.error("Failed to apply transform: %s", e)
