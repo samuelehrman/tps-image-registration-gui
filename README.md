@@ -34,6 +34,11 @@ pip install tpsreg-0.2.0-py3-none-any.whl
 pip install git+https://github.com/lambjames18/tps-image-registration-gui.git
 ```
 
+If you want to have the package be editable
+'''bash
+pip install -e "path\to\file\\tps-image-registration-gui"
+'''
+
 Either way, launch it with:
 
 ```bash
