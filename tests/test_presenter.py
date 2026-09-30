@@ -475,6 +475,21 @@ class TestTransforms:
         assert warped.shape[0] <= src_img.shape[0]
         assert warped.shape[1] <= src_img.shape[1]
 
+    def test_source_crop_pads_past_destination_edge(self):
+        """A source larger than the destination grid is padded, not truncated.
+
+        DREAM.3D export writes the crop back into the source file, which fails
+        if the crop comes out smaller than the source.
+        """
+        stack = np.arange(2 * 5 * 6, dtype=float).reshape(2, 5, 6, 1)
+        out = ApplicationPresenter._crop_with_padding(stack, (-1, 2), (8, 6), 99.0)
+
+        assert out.shape == (2, 8, 6, 1)
+        np.testing.assert_array_equal(out[:, 1:6, :4], stack[:, :, 2:])
+        assert np.all(out[:, 0] == 99.0)
+        assert np.all(out[:, 6:] == 99.0)
+        assert np.all(out[:, :, 4:] == 99.0)
+
     def test_export_transform_writes_a_file(self, loaded, tmp_path):
         self._add_grid(loaded)
         path = tmp_path / "transform.npy"

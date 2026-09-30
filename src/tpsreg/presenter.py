@@ -959,9 +959,14 @@ class ApplicationPresenter:
                 dummy = self.transform_manager.apply_transform(
                     dummy, tform, output_shape
                 )
-                slc = self._get_cropping_slice(dummy, src_img.shape, crop_mode)
-                warped = warped[slc[1:]]
-                dst_img = dst_img[slc[1:]]
+                origin = self._source_crop_origin(dummy, src_img.shape)
+                size = src_img.shape[:2]
+                warped = self._crop_with_padding(
+                    warped, origin, size, self._median_fill(src_img)
+                )
+                dst_img = self._crop_with_padding(
+                    dst_img, origin, size, self._median_fill(dst_img)
+                )
 
             if preview:
                 self._notify_view_show_preview(warped, dst_img)
@@ -1033,9 +1038,14 @@ class ApplicationPresenter:
                     output_shape=output_shape,
                     transforms=transforms,
                 )
-                slc = self._get_cropping_slice(dummy_stack, src_stack.shape, crop_mode)
-                warped_stack = warped_stack[slc]
-                dst_stack = dst_stack[slc]
+                origin = self._source_crop_origin(dummy_stack, src_stack.shape)
+                size = src_stack.shape[1:3]
+                warped_stack = self._crop_with_padding(
+                    warped_stack, origin, size, self._median_fill(src_stack)
+                )
+                dst_stack = self._crop_with_padding(
+                    dst_stack, origin, size, self._median_fill(dst_stack)
+                )
 
             if preview:
                 self._notify_view_show_preview(warped_stack, dst_stack)
@@ -1427,47 +1437,65 @@ class ApplicationPresenter:
             except Exception as e:
                 logger.error("Failed to save points: %s", e)
 
-    def _get_cropping_slice(
-        self,
-        warped: np.ndarray,
-        original_shape: tuple,
-        crop_mode: CropMode,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Get cropping slice based on crop mode. Returns slice objects for each dimension (Z, Y, X, C)."""
-        if crop_mode == CropMode.SOURCE:
-            # Crop to match source grid size
-            if warped.ndim == 4:
-                ridx = 1
-                cidx = 2
-            else:
-                ridx = 0
-                cidx = 1
+    @staticmethod
+    def _source_crop_origin(
+        footprint: np.ndarray, source_shape: tuple
+    ) -> tuple[int, int]:
+        """Top-left corner of a source-sized window centred on the warped footprint.
 
-            # Find centroid of warped non-zero region
-            nonzero = np.where(warped > 0)
-            if len(nonzero[ridx]) > 0:
-                centroid_r = int(np.mean(nonzero[ridx]))
-                centroid_c = int(np.mean(nonzero[cidx]))
+        ``footprint`` is a warped all-ones image, so its non-zero region is where
+        the source landed on the destination grid. The corner can be negative or
+        run past the far edge when the source does not fit inside the destination.
+        """
+        ridx = footprint.ndim - 3
+        cidx = ridx + 1
+        nonzero = np.nonzero(footprint > 0)
+        if len(nonzero[ridx]) == 0:
+            return 0, 0
+        centroid_r = int(np.mean(nonzero[ridx]))
+        centroid_c = int(np.mean(nonzero[cidx]))
+        return (
+            centroid_r - source_shape[ridx] // 2,
+            centroid_c - source_shape[cidx] // 2,
+        )
 
-                # Calculate crop region
-                r_start = max(0, centroid_r - original_shape[ridx] // 2)
-                r_end = min(warped.shape[ridx], r_start + original_shape[ridx])
-                c_start = max(0, centroid_c - original_shape[cidx] // 2)
-                c_end = min(warped.shape[cidx], c_start + original_shape[cidx])
-            else:
-                r_start = 0
-                r_end = original_shape[ridx]
-                c_start = 0
-                c_end = original_shape[cidx]
-            return (
-                slice(None),
-                slice(r_start, r_end),
-                slice(c_start, c_end),
-                slice(None),
-            )
+    @staticmethod
+    def _crop_with_padding(
+        array: np.ndarray,
+        origin: tuple[int, int],
+        size: tuple[int, int],
+        fill: np.ndarray | float,
+    ) -> np.ndarray:
+        """Cut a ``size`` window starting at ``origin`` from an (H, W, C) or (Z, H, W, C) array.
 
-        else:
-            return (slice(None), slice(None), slice(None), slice(None))
+        Parts of the window outside ``array`` are set to ``fill``, so the result is
+        always exactly ``size`` in the spatial axes. Anything writing the result back
+        into the source file (DREAM.3D export) depends on that.
+        """
+        ridx = array.ndim - 3
+        cidx = ridx + 1
+        (r0, c0), (height, width) = origin, size
+
+        out_shape = list(array.shape)
+        out_shape[ridx], out_shape[cidx] = height, width
+        out = np.empty(out_shape, dtype=array.dtype)
+        out[...] = fill
+
+        r_lo, r_hi = max(r0, 0), min(r0 + height, array.shape[ridx])
+        c_lo, c_hi = max(c0, 0), min(c0 + width, array.shape[cidx])
+        if r_hi > r_lo and c_hi > c_lo:
+            src = [slice(None)] * array.ndim
+            dst = [slice(None)] * array.ndim
+            src[ridx], src[cidx] = slice(r_lo, r_hi), slice(c_lo, c_hi)
+            dst[ridx] = slice(r_lo - r0, r_hi - r0)
+            dst[cidx] = slice(c_lo - c0, c_hi - c0)
+            out[tuple(dst)] = array[tuple(src)]
+        return out
+
+    @staticmethod
+    def _median_fill(array: np.ndarray) -> np.ndarray:
+        """Per-channel median over every non-channel axis."""
+        return np.median(array, axis=tuple(range(array.ndim - 1)))
 
     # ========== View Notification Methods ==========
 
